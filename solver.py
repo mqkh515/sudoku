@@ -1,4 +1,5 @@
 import numpy as np
+import itertools
 from collections import defaultdict
 
 v_set = {1, 2, 3, 4, 5, 6, 7, 8, 9}
@@ -12,7 +13,6 @@ class Cell:
         self.block_row = None
         self.block_col = None
         self.block_square = None
-        self.blocks = (self.block_row, self.block_col, self.block_square)
         self.potential_v = set() if v == 0 else {v}  # all the values this cell can take given current fixed cells
 
     def get_val(self):
@@ -26,8 +26,10 @@ class Cell:
 
     def update(self):
         """remove all fixed values in all blocks it belongs to"""
+        if self.is_fixed():
+            return
         existing_val = set()
-        for b in self.blocks:
+        for b in (self.block_row, self.block_col, self.block_square):
             for c in b.cells:
                 if c.is_fixed():
                     existing_val.add(c.get_val())
@@ -73,7 +75,7 @@ class TrialStatus:
         row_idx = int(tar_cell[0]) - 1
         row = start_point.split('\n')[row_idx]
         col_idx = int(tar_cell[1]) - 1
-        cell = row.split(',')[col_idx]
+        cell = row.split(',')[col_idx].strip()
         self.tar_cell_potential_vals = set([int(v) for v in cell])
         self.tar_cell_val = None
         self.tar_cell_tried_vals = set()
@@ -85,6 +87,7 @@ class TrialStatus:
             return 'exhausted'
         self.tar_cell_val = available_vals[0]
         self.tar_cell_tried_vals.add(available_vals[0])
+        print('trying: cell_%s: %d out of {%s}' % (self.tar_cell, self.tar_cell_val, ''.join(sorted([str(v) for v in self.tar_cell_potential_vals]))))
         return 'success'
 
 
@@ -119,6 +122,13 @@ class Problem:
             self.blocks.append(Block('square_%s' % start_pos, square_block_cell_list))
         self.assert_no_conflict()
 
+        # init cell potentials
+        for c in self.cells.values():
+            c.update()
+
+    def __str__(self):
+        return self.get_status_str()
+
     def apply_trial_status(self, trial_status):
         self.recover_from_status_str(trial_status.start_point)
         self.cells[trial_status.tar_cell].potential_v = {trial_status.tar_cell_val}
@@ -145,18 +155,15 @@ class Problem:
             row_s_list = []
             for col_idx in range(1, 10):
                 c_str = ''.join(sorted([str(v) for v in self.cells['%d%d' % (row_idx, col_idx)].potential_v]))
-                row_s_list.append(c_str)
+                row_s_list.append('%9s' % c_str)
             s_list.append(','.join(row_s_list))
         return '\n'.join(s_list)
 
     def recover_from_status_str(self, status_str):
         for row_idx, row_str in enumerate(status_str.split('\n')):
             for col_idx, cell_str in enumerate(row_str.split(',')):
-                self.cells['%d%d' % (row_idx, col_idx)].potential_v = set([int(v) for v in cell_str])
-        # curr_stats = self.status
-        # self.status = 'run'
-        # self.update_one_iter()
-        # self.status = curr_stats
+                cell_str = cell_str.strip()
+                self.cells['%d%d' % (row_idx + 1, col_idx + 1)].potential_v = set([int(v) for v in cell_str])
 
     def assert_no_empty_potential(self):
         """no cell should have empty potential value;
@@ -170,15 +177,16 @@ class Problem:
             for v in v_set:
                 if not b.potential_pos[v]:
                     empty_pos.append('%s-%d' % (b.name, v))
-        if self.status == 'run':
-            if empty_cell:
-                print('empty_cell_list: %s', ','.join(empty_cell))
-            if empty_pos:
-                print('empty_pos_list: %s', ','.join(empty_pos))
-            if empty_cell or empty_pos:
+
+        if empty_cell:
+            print('empty_cell_list: %s', ','.join(empty_cell))
+        if empty_pos:
+            print('empty_pos_list: %s', ','.join(empty_pos))
+        if empty_cell or empty_pos:
+            if self.status == 'run':
                 raise Exception('empty cell / pos in regular run')
-        else:
-            self.status = 'dead_end'
+            else:
+                self.status = 'dead_end'
 
     def assert_no_conflict(self):
         """for each block, cells with only one potential should have no duplicated value"""
@@ -191,8 +199,8 @@ class Problem:
             max_val = max(list(val_count.values()))
             if max_val > 1:
                 conflict_blocks.append(b.name)
-        print(self.get_status_str())
         if conflict_blocks:
+            print(self.get_status_str())
             print("conflict blocks: %s" % ', '.join(conflict_blocks))
             raise Exception('conflict blocks')
 
@@ -220,9 +228,36 @@ class Problem:
                             continue
                         if np.all([p in b_other.cell_names for p in pos]):
                             for c in b_other.cells:
-                                if c.name not in pos:
+                                if c.name not in pos and v in c.potential_v:
                                     c.potential_v.remove(v)
+        # for a given block,
+        # if any group of cells takes the same potential values, and number of potential_v equals number of cells,
+        # we can remove these values from all other cells of this block
+        # let's only try n up to 3
+        self.check_block_exclusive_combination(2)
+        self.check_block_exclusive_combination(3)
         self.assert_no_empty_potential()
+
+    def check_block_exclusive_combination(self, n_size):
+        for b in self.blocks:
+            tar_cell_groups = []
+            candidate_cells = [c for c in b.cells if len(c.potential_v) == n_size]
+            for c_group in itertools.combinations(candidate_cells, n_size):
+                all_same = True
+                ref_c = c_group[0]
+                for c in c_group[1:]:
+                    if sorted(list(c.potential_v)) != sorted(list(ref_c.potential_v)):
+                        all_same = False
+                        break
+                if all_same:
+                    tar_cell_groups.append(c_group)
+            for c_group in tar_cell_groups:
+                tar_cell_name_set = set([c.name for c in c_group])
+                tar_cell_val_set = c_group[0].potential_v
+                for c in b.cells:
+                    if c.is_fixed() or c.name in tar_cell_name_set:
+                        continue
+                    c.potential_v -= tar_cell_val_set
 
     def update(self):
         self.update_one_iter()
@@ -236,7 +271,7 @@ class Problem:
             if self.status == 'dead_end':
                 return
             end_status = self.get_status_str()
-            status_changed = start_status == end_status
+            status_changed = start_status != end_status
             n_iter += 1
             if n_iter % 5 == 0:
                 print('%d iter taken;' % n_iter)
