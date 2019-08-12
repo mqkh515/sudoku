@@ -237,6 +237,7 @@ class Problem:
         self.check_block_exclusive_combination(2)
         self.check_block_exclusive_combination(3)
         self.assert_no_empty_potential()
+        self.assert_no_conflict()
 
     def check_block_exclusive_combination(self, n_size):
         for b in self.blocks:
